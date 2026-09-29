@@ -1,0 +1,188 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 8px; }
+  #status { font-size: 13px; color: #666; margin-bottom: 6px; }
+  #partial { color: #999; font-size: 15px; min-height: 20px; }
+  #final { font-size: 15px; white-space: pre-wrap; margin-top: 4px; }
+  #stats { font-size: 12px; color: #888; margin-top: 6px; }
+  button { padding: 6px 14px; margin-right: 8px; font-size: 14px; cursor: pointer; }
+  #error { color: #c00; font-size: 13px; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <div>
+    <button id="startBtn">시작</button>
+    <button id="stopBtn" disabled>중지</button>
+  </div>
+  <div id="status">대기 중</div>
+  <div id="partial"></div>
+  <div id="final"></div>
+  <div id="error"></div>
+  <div id="stats"></div>
+
+<script>
+// app.py 가 문자열 치환으로 아래 두 값을 주입한다 (json.dumps 로 직렬화되어 안전하게 이스케이프됨).
+const WS_URL = {{WS_URL}};
+const API_KEY = {{API_KEY}};
+
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const statusEl = document.getElementById("status");
+const partialEl = document.getElementById("partial");
+const finalEl = document.getElementById("final");
+const errorEl = document.getElementById("error");
+const statsEl = document.getElementById("stats");
+
+let ws = null;
+let audioCtx = null;
+let workletNode = null;
+let mediaStream = null;
+let firstPartialAt = null;
+let startedAt = null;
+let finalCount = 0;
+let stopping = false;
+
+// 브라우저 기본 표본율로 캡처한 뒤 워크릿 안에서 16kHz 로 다운샘플한다.
+// new AudioContext({sampleRate:16000}) 는 브라우저별로 불안정하므로 의존하지 않는다.
+const WORKLET_SRC = `
+class DownsampleProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._buffer = [];
+    this._ratio = sampleRate / 16000;
+    this._acc = 0;
+  }
+  process(inputs) {
+    const input = inputs[0];
+    if (!input || input.length === 0) return true;
+    const channel = input[0];
+    if (!channel) return true;
+    for (let i = 0; i < channel.length; i++) {
+      this._acc += 1;
+      if (this._acc >= this._ratio) {
+        this._acc -= this._ratio;
+        this._buffer.push(channel[i]);
+      }
+    }
+    if (this._buffer.length >= 1600) {
+      const chunk = this._buffer.splice(0, 1600);
+      const int16 = new Int16Array(chunk.length);
+      for (let i = 0; i < chunk.length; i++) {
+        let s = Math.max(-1, Math.min(1, chunk[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      this.port.postMessage(int16.buffer, [int16.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('downsample-processor', DownsampleProcessor);
+`;
+
+function setStatus(text) { statusEl.textContent = text; }
+
+function updateStats() {
+  const firstPartialMs = firstPartialAt && startedAt ? Math.round(firstPartialAt - startedAt) : null;
+  statsEl.textContent = `첫 partial 지연: ${firstPartialMs !== null ? firstPartialMs + "ms" : "-"} · final 개수: ${finalCount}`;
+}
+
+async function start() {
+  errorEl.textContent = "";
+  partialEl.textContent = "";
+  finalEl.textContent = "";
+  firstPartialAt = null;
+  finalCount = 0;
+  startedAt = performance.now();
+  updateStats();
+
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+    });
+  } catch (e) {
+    errorEl.textContent = "마이크 접근 실패: " + e.message + " (localhost 또는 https 에서만 동작합니다)";
+    return;
+  }
+
+  ws = new WebSocket(WS_URL, ["hplat.v1", "hplat.token." + API_KEY]);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => {
+    setStatus("연결됨 - 말씀하세요");
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+  };
+
+  ws.onmessage = (ev) => {
+    let payload;
+    try {
+      payload = JSON.parse(ev.data);
+    } catch (e) {
+      return;
+    }
+    if (payload.status === "failed") {
+      errorEl.textContent = payload.message || "인식 실패";
+      return;
+    }
+    if (payload.final) {
+      finalEl.textContent += (finalEl.textContent ? " " : "") + payload.text;
+      partialEl.textContent = "";
+      finalCount += 1;
+      updateStats();
+    } else {
+      if (firstPartialAt === null) {
+        firstPartialAt = performance.now();
+        updateStats();
+      }
+      partialEl.textContent = payload.text || "";
+    }
+  };
+
+  ws.onerror = () => {
+    errorEl.textContent = "WebSocket 오류";
+  };
+
+  ws.onclose = () => {
+    setStatus("연결 종료");
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  };
+
+  audioCtx = new AudioContext();
+  const blob = new Blob([WORKLET_SRC], { type: "application/javascript" });
+  const workletUrl = URL.createObjectURL(blob);
+  await audioCtx.audioWorklet.addModule(workletUrl);
+
+  const source = audioCtx.createMediaStreamSource(mediaStream);
+  workletNode = new AudioWorkletNode(audioCtx, "downsample-processor");
+  workletNode.port.onmessage = (ev) => {
+    if (ws && ws.readyState === WebSocket.OPEN && !stopping) {
+      ws.send(ev.data);
+    }
+  };
+  source.connect(workletNode);
+}
+
+function stop() {
+  stopping = true;
+  setStatus("중지 중 (마지막 결과 대기)...");
+  if (workletNode) { workletNode.disconnect(); workletNode = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+
+  // 마지막 final 이 소켓 닫힘 직후 도착할 수 있어 3초 대기 후 닫는다.
+  setTimeout(() => {
+    if (ws) { ws.close(); ws = null; }
+    stopping = false;
+    setStatus("대기 중");
+  }, 3000);
+}
+
+startBtn.addEventListener("click", start);
+stopBtn.addEventListener("click", stop);
+</script>
+</body>
+</html>
