@@ -185,7 +185,9 @@ true}],
 입력: `st.audio_input`(마이크) **또는** `st.file_uploader`(wav/mp3/m4a/flac/ogg/webm). 둘 다 지원.
 옵션: language(BCP-47, 예 `ko`, 비우면 엔진 기본), provider/model(§3.4 두 모드).
 
-**`POST /model/transcribe`** · `multipart/form-data`
+> ⚠️ **이 PoC 는 동기 `POST /model/transcribe` 를 쓰지 않는다. 파일/마이크 입력은 전부 비동기(`/transcribe/async`)만.** 아래 multipart 규격은 async 제출에도 동일하다.
+
+**`POST /model/transcribe/async`** · `multipart/form-data`
 
 | 파트 | 필수 | 설명 |
 |---|---|---|
@@ -309,7 +311,7 @@ X-API-Key: hp_live_…      # WS 핸드셰이크 헤더
 - 구현: 별도 스레드가 수신해 `queue.Queue` 에 넣고, 메인 루프가 `st.empty()` 를 갱신해 partial 은 회색·final 은 확정 텍스트로 누적 표시. 보내는 쪽/받는 쪽은 서로 다른 스레드(송신 중에도 수신해야 한다). Streamlit 스크립트 스레드 밖에서 `st.*` 를 호출하지 말 것 — 스레드는 큐에만 넣는다.
 - 연결 전 확인: WS 는 401 을 받고 재시도할 수 없다. 사이드바 「연결 확인」(`/client/me`)이 성공한 키인지 먼저 확인.
 - 표시할 것: 첫 partial 까지의 지연, final 개수, 사용된 `provider`(스트림 응답 프레임에는 provider 가 없다 → 「서비스
-설정 그대로」 모드에서 반영 여부는 동기 `transcribe` 응답으로 확인).
+설정 그대로」 모드에서 반영 여부는 비동기 `transcribe/async` 폴링 응답으로 확인).
 
 ### 6.3 TTS 탭
 
@@ -461,7 +463,6 @@ streamlit run app.py
 | 키 확인 | `GET /client/me` | — | JSON |
 | 발견 | `GET /model/providers` | — | JSON |
 | LLM | `POST /model/generate` | JSON (`messages`) | JSON 또는 SSE |
-| STT 동기 | `POST /model/transcribe` | multipart (`audio`) | JSON |
 | STT 비동기 제출 | `POST /model/transcribe/async` | multipart (`audio`) | 202 JSON |
 | STT 비동기 조회 | `GET /model/transcribe/async/{id}?provider=` | — | JSON |
 | STT 실시간 | `GET /model/transcribe/stream?sample_rate=` (WS) | binary raw PCM16LE mono | JSON 프레임 `{text, final}` |

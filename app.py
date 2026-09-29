@@ -20,6 +20,17 @@ from api_client import ApiError, Conn
 
 st.set_page_config(page_title="hplatform PoC", layout="wide")
 
+# st.audio_input 의 시작/멈춤(마이크) 버튼이 너무 작아서 위젯 전체를 키운다.
+st.markdown(
+    """
+    <style>
+    [data-testid="stAudioInput"] { zoom: 1.6; }
+    [data-testid="stAudioInputActionButton"] { min-width: 2.5rem; min-height: 2.5rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 APP_DIR = pathlib.Path(__file__).parent
 
 
@@ -93,6 +104,32 @@ def render_sidebar() -> Conn:
 # LLM 탭
 # ---------------------------------------------------------------------------
 
+def _prompt_components_form() -> dict | None:
+    """prompt_components 입력 폼. 빈 항목은 키를 생략한다."""
+    sp = st.text_area("system_prompt", key="pc_system_prompt")
+    ctx = st.text_area("context (선택 — 참고 자료)", key="pc_context")
+    ctx_label = st.text_input("context_label (선택, 생략 시 '참고 정보')", key="pc_context_label")
+    rules = st.text_area("output_rules (선택)", key="pc_output_rules")
+    st.caption("fewshots (선택 — 최대 20쌍, 합쳐서 8000자)")
+    n = int(st.number_input("예시 쌍 개수", min_value=0, max_value=20, value=0, step=1, key="pc_n_fewshots"))
+    fewshots = []
+    for i in range(n):
+        c1, c2 = st.columns(2)
+        u = c1.text_input(f"user {i + 1}", key=f"pc_fs_user_{i}")
+        a = c2.text_input(f"assistant {i + 1}", key=f"pc_fs_asst_{i}")
+        if u or a:
+            fewshots.append({"user": u, "assistant": a})
+    comp = {
+        "system_prompt": sp,
+        "context": ctx,
+        "context_label": ctx_label,
+        "output_rules": rules,
+        "fewshots": fewshots,
+    }
+    comp = {k: v for k, v in comp.items() if v}
+    return comp or None
+
+
 def render_llm_tab(conn: Conn, providers: dict | None) -> None:
     if not providers or not providers.get("llm"):
         st.warning("이 설치에 LLM 이 연결되어 있지 않습니다.")
@@ -106,9 +143,26 @@ def render_llm_tab(conn: Conn, providers: dict | None) -> None:
         model = st.selectbox("Model", models, key="llm_model") if models else None
 
     with st.expander("고급 옵션"):
-        system = st.text_area("system 지시 (선택)", key="llm_system")
+        sys_mode = st.radio(
+            "system 프롬프트 방식",
+            ["단순 (system)", "구성 요소 (prompt_components)"],
+            key="llm_sys_mode",
+            horizontal=True,
+        )
+        system = None
+        prompt_components = None
+        if sys_mode == "단순 (system)":
+            system = st.text_area("system 지시 (선택)", key="llm_system")
+        else:
+            prompt_components = _prompt_components_form()
         use_temp = st.checkbox("temperature 사용", key="llm_use_temp")
-        temperature = st.slider("temperature", 0.0, 2.0, 0.7, key="llm_temp") if use_temp else None
+        # Anthropic(claude)은 0..1 만 받는다. 서비스 설정 그대로면 provider 를 모르므로 1.0 으로 제한.
+        temp_max = 2.0 if provider and provider != "claude" else 1.0
+        temperature = (
+            st.slider("temperature", 0.0, temp_max, 0.7, key=f"llm_temp_{temp_max}") if use_temp else None
+        )
+        if use_temp and temp_max == 1.0:
+            st.caption("서비스 설정 그대로 / claude 는 temperature 0~1 만 허용")
         use_max_tokens = st.checkbox("max_tokens 사용", key="llm_use_max_tokens")
         max_tokens = (
             int(st.number_input("max_tokens", min_value=1, value=512, step=1, key="llm_max_tokens"))
@@ -158,6 +212,7 @@ def render_llm_tab(conn: Conn, providers: dict | None) -> None:
                             conn,
                             messages=st.session_state["messages"],
                             system=system or None,
+                            prompt_components=prompt_components,
                             provider=provider,
                             model=model,
                             temperature=temperature,
@@ -192,6 +247,7 @@ def render_llm_tab(conn: Conn, providers: dict | None) -> None:
                         conn,
                         messages=st.session_state["messages"],
                         system=system or None,
+                        prompt_components=prompt_components,
                         provider=provider,
                         model=model,
                         temperature=temperature,
@@ -236,7 +292,7 @@ def render_stt_tab(conn: Conn, providers: dict | None) -> None:
             mime = up.type or "application/octet-stream"
             filename = up.name
 
-    language = st.text_input("language (BCP-47, 선택)", key="stt_language")
+    language = st.text_input("language (BCP-47, 선택)", value="ko", key="stt_language")
 
     mode = st.radio("모델 선택", ["서비스 설정 그대로", "직접 지정"], key="stt_mode", horizontal=True)
     provider = model = None
@@ -244,73 +300,48 @@ def render_stt_tab(conn: Conn, providers: dict | None) -> None:
         provider = st.selectbox("Provider", providers["stt"], key="stt_provider")
         model = st.text_input("Model (자유 입력, 선택 — 목록 없음)", key="stt_model") or None
 
-    is_async = st.checkbox("긴 파일 (비동기)", key="stt_async_toggle")
+    st.caption("전사는 비동기(제출 → 폴링)로만 동작합니다.")
 
-    if not is_async:
-        if st.button("전사하기", disabled=audio_bytes is None):
-            with st.spinner("전사 중..."):
+    if st.button("제출", disabled=audio_bytes is None):
+        try:
+            submit = api_client.stt_transcribe_async_submit(
+                conn,
+                audio_bytes=audio_bytes,
+                filename=filename,
+                mime=mime,
+                provider=provider,
+                model=model,
+                language=language or None,
+            )
+            st.session_state["stt_async_job"] = submit
+        except ApiError as e:
+            show_error(e)
+
+    job = st.session_state.get("stt_async_job")
+    if job:
+        st.caption(f"job id: {job.get('id')} (provider={job.get('provider')})")
+        if st.button("상태 폴링 시작"):
+            placeholder = st.empty()
+            deadline = time.time() + 300
+            while time.time() < deadline:
                 try:
-                    resp = api_client.stt_transcribe(
-                        conn,
-                        audio_bytes=audio_bytes,
-                        filename=filename,
-                        mime=mime,
-                        provider=provider,
-                        model=model,
-                        language=language or None,
+                    status = api_client.stt_transcribe_async_poll(
+                        conn, job_id=job["id"], provider=job["provider"]
                     )
                 except ApiError as e:
-                    show_error(e)
-                else:
-                    st.success("완료")
-                    st.subheader(resp.get("text", ""))
-                    st.caption(f"provider: {resp.get('provider', '?')}")
-                    segments = resp.get("segments")
-                    if segments:
-                        st.dataframe(segments)
-                    with st.expander("원본 응답"):
-                        st.json(resp)
-    else:
-        if st.button("제출", disabled=audio_bytes is None):
-            try:
-                submit = api_client.stt_transcribe_async_submit(
-                    conn,
-                    audio_bytes=audio_bytes,
-                    filename=filename,
-                    mime=mime,
-                    provider=provider,
-                    model=model,
-                    language=language or None,
-                )
-                st.session_state["stt_async_job"] = submit
-            except ApiError as e:
-                show_error(e)
-
-        job = st.session_state.get("stt_async_job")
-        if job:
-            st.caption(f"job id: {job.get('id')} (provider={job.get('provider')})")
-            if st.button("상태 폴링 시작"):
-                placeholder = st.empty()
-                deadline = time.time() + 300
-                while time.time() < deadline:
-                    try:
-                        status = api_client.stt_transcribe_async_poll(
-                            conn, job_id=job["id"], provider=job["provider"]
-                        )
-                    except ApiError as e:
-                        placeholder.error(f"{e.status} — {e.message}")
-                        break
-                    st_status = status.get("status")
-                    if st_status == "done":
-                        placeholder.success(status.get("text", ""))
-                        break
-                    if st_status == "failed":
-                        placeholder.error(status.get("message", "실패"))
-                        break
-                    placeholder.info("처리 중...")
-                    time.sleep(2.5)
-                else:
-                    placeholder.warning("최대 대기 시간(5분) 초과")
+                    placeholder.error(f"{e.status} — {e.message}")
+                    break
+                st_status = status.get("status")
+                if st_status == "done":
+                    placeholder.success(status.get("text", ""))
+                    break
+                if st_status == "failed":
+                    placeholder.error(status.get("message", "실패"))
+                    break
+                placeholder.info("처리 중...")
+                time.sleep(2.5)
+            else:
+                placeholder.warning("최대 대기 시간(5분) 초과")
 
     st.divider()
     st.subheader("실시간 (WebSocket)")

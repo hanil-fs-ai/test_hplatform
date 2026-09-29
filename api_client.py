@@ -106,6 +106,7 @@ def llm_generate(
     *,
     messages: list[dict[str, str]],
     system: str | None = None,
+    prompt_components: dict | None = None,
     provider: str | None = None,
     model: str | None = None,
     temperature: float | None = None,
@@ -117,6 +118,7 @@ def llm_generate(
         {
             "messages": messages,
             "system": system,
+            "prompt_components": prompt_components,
             "provider": provider,
             "model": model,
             "temperature": temperature,
@@ -134,6 +136,7 @@ def llm_generate_stream(
     *,
     messages: list[dict[str, str]],
     system: str | None = None,
+    prompt_components: dict | None = None,
     provider: str | None = None,
     model: str | None = None,
     temperature: float | None = None,
@@ -151,6 +154,7 @@ def llm_generate_stream(
         {
             "messages": messages,
             "system": system,
+            "prompt_components": prompt_components,
             "provider": provider,
             "model": model,
             "temperature": temperature,
@@ -182,23 +186,6 @@ def llm_generate_stream(
 
 
 # ---- STT ----
-
-def stt_transcribe(
-    conn: Conn,
-    *,
-    audio_bytes: bytes,
-    filename: str,
-    mime: str,
-    provider: str | None = None,
-    model: str | None = None,
-    language: str | None = None,
-) -> dict:
-    files = {"audio": (filename, audio_bytes, mime)}
-    data = _clean({"provider": provider, "model": model, "language": language})
-    return request(
-        "POST", "/model/transcribe", conn, files=files, data=data or None, timeout=120
-    ).json()
-
 
 def stt_transcribe_async_submit(
     conn: Conn,

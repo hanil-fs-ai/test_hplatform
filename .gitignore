@@ -1,4 +1,41 @@
+# 가상환경
 .venv/
+venv/
+env/
+
+# Python 캐시/빌드
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 테스트/도구 캐시
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 비밀값 (API 키 등) — 절대 커밋 금지
+.env
+.env.*
+.streamlit/secrets.toml
+
+# 테스트용 오디오/산출물 (용량 큼)
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.webm
+*.pcm
+
+# 에디터/OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Claude Code 로컬 설정
+.claude/settings.local.json

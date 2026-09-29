@@ -202,18 +202,17 @@ def test_llm_generate_stream_decodes_utf8_even_when_resp_encoding_is_wrong(mock_
 # ---- STT multipart shape ----
 
 @patch("api_client.requests.request")
-def test_stt_transcribe_sends_audio_part_named_audio(mock_req, conn):
-    mock_req.return_value = _make_response(200, {"provider": "whisper", "text": "hello"})
-    api_client.stt_transcribe(conn, audio_bytes=b"RIFF....", filename="a.wav", mime="audio/wav")
+def test_stt_async_submit_sends_audio_part_named_audio(mock_req, conn):
+    mock_req.return_value = _make_response(202, {"id": "j", "provider": "whisper"})
+    api_client.stt_transcribe_async_submit(conn, audio_bytes=b"RIFF....", filename="a.wav", mime="audio/wav")
     files = mock_req.call_args.kwargs["files"]
-    assert "audio" in files
     assert files["audio"] == ("a.wav", b"RIFF....", "audio/wav")
 
 
 @patch("api_client.requests.request")
-def test_stt_transcribe_omits_empty_language(mock_req, conn):
-    mock_req.return_value = _make_response(200, {"provider": "whisper", "text": "hi"})
-    api_client.stt_transcribe(conn, audio_bytes=b"x", filename="a.wav", mime="audio/wav", language="")
+def test_stt_async_submit_omits_empty_language(mock_req, conn):
+    mock_req.return_value = _make_response(202, {"id": "j", "provider": "whisper"})
+    api_client.stt_transcribe_async_submit(conn, audio_bytes=b"x", filename="a.wav", mime="audio/wav", language="")
     data = mock_req.call_args.kwargs["data"]
     assert data is None or "language" not in data
 
