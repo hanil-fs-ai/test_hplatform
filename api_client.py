@@ -161,8 +161,16 @@ def llm_generate_stream(
         }
     )
     resp = request("POST", "/model/generate", conn, json_body=body, stream=True, timeout=(10, 120))
-    for line in resp.iter_lines(decode_unicode=True):
-        if not line or not line.startswith("data: "):
+    # decode_unicode=True 를 쓰면 requests 가 resp.encoding 으로 디코딩하는데,
+    # 서버가 Content-Type 에 charset 을 안 붙이면 requests 는 ISO-8859-1 로
+    # 잘못 추정해 한글 등 멀티바이트 UTF-8 이 깨진다. 그래서 raw bytes 로 받아
+    # 직접 UTF-8 로 디코딩한다 (개행 0x0A 는 UTF-8 연속 바이트와 겹치지 않아
+    # 줄 단위 분리 자체는 안전하다).
+    for raw_line in resp.iter_lines():
+        if not raw_line:
+            continue
+        line = raw_line.decode("utf-8", errors="replace")
+        if not line.startswith("data: "):
             continue
         try:
             frame = json.loads(line[len("data: "):])

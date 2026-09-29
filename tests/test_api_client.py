@@ -136,10 +136,12 @@ def test_llm_generate_keeps_zero_temperature(mock_req, conn):
 # ---- SSE stream parsing ----
 
 def _sse_lines(*frames):
+    """실제 requests.Response.iter_lines() 처럼 raw bytes 줄을 만든다
+    (UTF-8 인코딩; decode_unicode=True 를 안 쓰는 게 이번 수정의 핵심)."""
     lines = []
     for f in frames:
-        lines.append(f"data: {json.dumps(f)}")
-        lines.append("")
+        lines.append(f"data: {json.dumps(f, ensure_ascii=False)}".encode("utf-8"))
+        lines.append(b"")
     return lines
 
 
@@ -172,11 +174,29 @@ def test_llm_generate_stream_stops_at_first_done_frame(mock_req, conn):
 @patch("api_client.requests.request")
 def test_llm_generate_stream_skips_malformed_lines(mock_req, conn):
     resp = _make_response(200)
-    resp.iter_lines.return_value = iter(["", "not-a-data-line", "data: {bad json", "data: {\"done\": true}"])
+    resp.iter_lines.return_value = iter(
+        [b"", b"not-a-data-line", b"data: {bad json", b'data: {"done": true}']
+    )
     mock_req.return_value = resp
 
     out = list(api_client.llm_generate_stream(conn, messages=[{"role": "user", "content": "hi"}]))
     assert out == [{"done": True}]
+
+
+@patch("api_client.requests.request")
+def test_llm_generate_stream_decodes_utf8_even_when_resp_encoding_is_wrong(mock_req, conn):
+    """회귀 테스트: 서버가 Content-Type 에 charset 을 안 붙이면 requests 는
+    resp.encoding 을 ISO-8859-1 로 잘못 추정한다. decode_unicode=True 를 쓰면
+    이 값으로 디코딩되어 한글이 깨지므로, resp.encoding 과 무관하게 항상
+    UTF-8 로 직접 디코딩해야 한다."""
+    frame = {"content_delta": "안녕하세요 한글 테스트"}
+    resp = _make_response(200)
+    resp.encoding = "ISO-8859-1"  # requests 의 흔한 오추정 시나리오
+    resp.iter_lines.return_value = iter(_sse_lines(frame, {"done": True}))
+    mock_req.return_value = resp
+
+    out = list(api_client.llm_generate_stream(conn, messages=[{"role": "user", "content": "hi"}]))
+    assert out[0]["content_delta"] == "안녕하세요 한글 테스트"
 
 
 # ---- STT multipart shape ----
