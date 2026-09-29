@@ -1,0 +1,15 @@
+[project]
+name = "test-hplatform"
+version = "0.1.0"
+description = "hplatform 클라이언트 PoC (Streamlit)"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit",
+    "requests",
+    "websocket-client",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
